@@ -1,0 +1,166 @@
+#include <iostream>
+#include <mpi.h>
+
+using namespace std;
+
+void insert(int*, int);
+void fillRandom(int*, int);
+void oddEvenSort(int*, int);
+int findNeighbor(int, int, int);
+void merge(int*, int*, int*, int, int);
+
+int main(int arg, char* arc[]) {
+    int* wholeArray = nullptr;
+    int arraySize, processor, numProcessors;
+    double startTime, endTime;
+    MPI_Status status;
+
+    MPI_Init(&arg, &arc);
+    MPI_Comm_size(MPI_COMM_WORLD, &numProcessors);
+    MPI_Comm_rank(MPI_COMM_WORLD, &processor);
+
+    if (processor == 0) {
+        cout << "Enter array size: ";
+        cin >> arraySize;
+        if (arraySize < 0)
+            arraySize = numProcessors;
+        if ((arraySize % numProcessors) != 0)
+            arraySize = ((arraySize / numProcessors) + 1) * numProcessors;
+        wholeArray = new int[arraySize];
+        //insert(wholeArray, arraySize);
+        fillRandom(wholeArray, arraySize);
+        startTime = MPI_Wtime();
+    }
+
+    MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Bcast(&arraySize, 1, MPI_INT, 0, MPI_COMM_WORLD);  //Broadcast the size to all processors
+    MPI_Barrier(MPI_COMM_WORLD);
+    //set the size for each processor to work on
+    int subSequencePerProcessor = arraySize / numProcessors;
+
+    int* array = new int[subSequencePerProcessor];
+    int* temp = new int[subSequencePerProcessor * 2];
+    int* neighborArray = new int[subSequencePerProcessor];
+
+    //Fill the array in descending order
+    //scatter wholeArray from process 0 to all others
+    MPI_Scatter(wholeArray, subSequencePerProcessor, MPI_INT,
+        array, subSequencePerProcessor, MPI_INT,
+        0, MPI_COMM_WORLD);
+    oddEvenSort(array, subSequencePerProcessor);
+    for (int currentProcess = 0; currentProcess < numProcessors; currentProcess++) {
+        MPI_Barrier(MPI_COMM_WORLD);
+        //The neighbor is the first element of the next process, check the case where we need to exchange the last element of the current processor with the first element of the next processor
+        int neighbor = findNeighbor(currentProcess, processor, numProcessors);
+        MPI_Barrier(MPI_COMM_WORLD);
+        if (neighbor >= 0 && neighbor < numProcessors) {
+            //Send my values to my neighbor and receive values from my neighbor
+            MPI_Sendrecv(array, subSequencePerProcessor, MPI_INT,
+                neighbor, currentProcess, neighborArray, subSequencePerProcessor,
+                MPI_INT, neighbor, currentProcess,
+                MPI_COMM_WORLD, &status);
+
+            //If my processor is less than the rank of my neighbor, keep the smaller values
+            if (processor < neighbor) //If comparing P2 with P3 then keep the smaller values
+                merge(array, neighborArray, temp, subSequencePerProcessor, 1);
+            else //If comparing P2 with P0 then keep the larger values
+                merge(array, neighborArray, temp, subSequencePerProcessor, 0);
+        }
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+    //Create an array composed of many small arrays from all processors on process ZERO
+    MPI_Gather(array, subSequencePerProcessor, MPI_INT,
+        wholeArray, subSequencePerProcessor, MPI_INT,
+        0, MPI_COMM_WORLD);
+    if (processor == 0) {
+        endTime = MPI_Wtime();
+        //for(int i = 0; i < arraySize; i++)
+        //  cout << "Array[" << i << "] -> " << wholeArray[i] << endl;
+        cout << "Time taken: " << endTime - startTime << endl;
+        delete[] wholeArray;
+    }
+    delete[] array;
+    delete[] neighborArray;
+    delete[] temp;
+
+    MPI_Finalize();
+    return 0;
+}
+
+void insert(int* wholeArray, int arraySize) {
+    cout << "Enter " << arraySize << " numbers." << endl;
+    for (int i = 0; i < arraySize; i++)
+        cin >> wholeArray[i];
+    cout << "Array filled correctly." << endl;
+}
+
+void fillRandom(int* wholeArray, int arraySize) {
+    for (int i = 0; i < arraySize; i++)
+        wholeArray[i] = rand() % arraySize;
+}
+
+void oddEvenSort(int* wholeArray, int arraySize) {
+    bool sorted = false;
+    while (!sorted) { //If it's not sorted yet
+        sorted = true;
+        for (int i = 1; i < arraySize - 1; i = i + 2) // A kind of bubble sort for odd elements
+            if (wholeArray[i] > wholeArray[i + 1]) { // If sorting is needed
+                swap(wholeArray[i], wholeArray[i + 1]); // Sort
+                sorted = false; //After swapping, it's not sorted
+            }
+        for (int i = 0; i < arraySize - 1; i = i + 2) // Even
+            if (wholeArray[i] > wholeArray[i + 1]) {
+                swap(wholeArray[i], wholeArray[i + 1]);
+                sorted = false;
+            }
+    }
+}
+
+int findNeighbor(int currentProcess, int process, int numProcessors) {
+    int neighbor;
+    if (currentProcess % 2 != 0) {  //If it's an odd phase
+        if (process % 2 != 0) {  //Odd process
+            neighbor = process + 1;
+        }
+        else {  //Even process
+            neighbor = process - 1;
+        }
+    }
+    else {  //If it's an even phase
+        if (process % 2 != 0) {  //Odd process
+            neighbor = process - 1;
+        }
+        else {  //Even process
+            neighbor = process + 1;
+        }
+    }
+    if (neighbor < 0 || neighbor >= numProcessors) //Edge cases
+        neighbor = -1;
+    return neighbor;
+}
+
+void merge(int* array, int* neighborArray, int* temp, int subSequencePerProcessor, int x)
+{
+    int i, j, k;
+    // Already sorted array
+    for (i = 0, j = 0, k = 0; i < subSequencePerProcessor * 2; i++) {
+        if (j < subSequencePerProcessor && k < subSequencePerProcessor) {
+            if (array[j] < neighborArray[k]) {
+                temp[i] = array[j]; //Add array[j] element to temp because it's smaller
+                j++;
+            }
+            else {
+                temp[i] = neighborArray[k]; //Add neighbor[k] element to temp because it's smaller
+                k++;
+            }
+        }
+        else if (j < subSequencePerProcessor) {
+            temp[i] = array[j];
+            j++;
+        }
+        else {
+            temp[i] = neighborArray[k];
+            k++;
+        }
+    }
+}
